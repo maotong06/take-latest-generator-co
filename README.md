@@ -1,0 +1,687 @@
+# 仅30行代码，利用Generator优雅地解决Vue，React中的请求竞态问题
+
+# 前端的常见的竞态问题有哪些
+
+在Vue，React中，我们经常会遇到这样的问题：在一个页面中，快速的执行同一个操作，比如翻页，搜索框，会触发多次请求操作，由于网络问题，或者数据查询的快慢不同。可能导致后发送的请求，先返回。先发送的后返回，导致渲染出了前面的数据。这种就是前端常见的竞态问题。
+但是我们只需要最后一次请求的结果，前面的请求结果都可以忽略。
+
+> 下面的例子主要用vue的代码举例，react中其实也是同理。
+
+# 以前的解决方案
+之前常见的解决方案有下面的几种：
+
+## 1. 通过变量标记，在给data赋值前判断是否打断操作
+
+```javascript
+watchEffect((onCleanup) => {
+  let isCancel = false
+
+  fetchSomething().then(res => {
+    if (isCancel) return
+    renderData.value = res
+  })
+
+  onCleanup(() => {
+    // 下一次执行watch的时候，执行清理函数
+    isCancel = true
+  })
+})
+```
+
+## 2. 利用 `about()`, 在清理函数中打断请求
+
+这种方案更好一些，能够在直接打断请求，节省用户的带宽和流量，我们以fetch api举例
+
+```javascript
+watchEffect((onCleanup) => {
+  const ac = new AbortController();
+
+  const res = fetch('url', {
+    signal: ac.signal
+  }).then(res => {
+    renderData.value = res
+  })
+
+  onCleanup(() => {
+    // 下一次执行watch的时候，执行清理函数
+    ac.abort()
+  })
+})
+```
+
+## 3. 使用 RxJS
+
+详情参考： https://juejin.cn/post/7203294201313034301
+
+```js
+const target = useRef(null); // 指向搜索按钮
+
+useEffect(() => {
+  if (target) {
+    const subscription = fromEvent(target.current, 'click') // 可观察的点击事件流
+      .pipe(
+        debounceTime(300), // 对事件流防抖
+        switchMap(cur => // 将事件流转换成请求流，当有新的请求开始产生数据，停止观察老的请求
+          from( // promise --> Observable
+            postData(
+              'url',
+              {
+                name: keyword,
+              },
+            ),
+          ),
+        ),
+        map(cur => cur?.data?.name),
+        tap(result => { // 处理副作用
+          setData(result);
+        }),
+      )
+      .subscribe(); // 触发
+    return () => subscription.unsubscribe();
+  }
+}, [target, keyword]);
+```
+
+## 4. react中还可以使用 redux-saga
+
+利用 redux-saga 的 takeLatest，cancel 等方法，可以很方便的解决竞态问题。
+详情见官网： https://redux-saga.js.org/
+
+```js
+import { take, put, call, fork, cancel, cancelled, delay } from 'redux-saga/effects'
+import { someApi, actions } from 'somewhere'
+
+function* bgSync() {
+  try {
+    while (true) {
+      yield put(actions.requestStart())
+      const result = yield call(someApi)
+      yield put(actions.requestSuccess(result))
+      yield delay(5000)
+    }
+  } finally {
+    if (yield cancelled())
+      yield put(actions.requestFailure('Sync cancelled!'))
+  }
+}
+
+function* main() {
+  while ( yield take(START_BACKGROUND_SYNC) ) {
+    // 启动后台任务
+    const bgSyncTask = yield fork(bgSync)
+
+    // 等待用户的停止操作
+    yield take(STOP_BACKGROUND_SYNC)
+    // 用户点击了停止，取消后台任务
+    // 这会导致被 fork 的 bgSync 任务跳进它的 finally 区块
+    yield cancel(bgSyncTask)
+  }
+}
+```
+
+## 上述方案的一些不足
+
+方案1，2中。实现起来比较简单。但是需要我们自己来声明变量来控制，没有很好的逻辑內聚。假如我们的watch函数是需要串行2个接口请求，如果想实现精确控制，那么我们不得不给每个接口都声明一个变量来控制。这样就会导致代码的可读性变差。
+
+方案3，4中。可以解决较为复杂的请求并发问题。但也有缺点：
+
+  1. 这2个框架都需要一些上手时间。如果本身项目比较简单。只有少数的常见需要控制竞态的请求。那么引入这2个框架，也会导致项目的复杂度增加。构建成本也会增加一些。项目中的其他同学也需要学习一下框架使用。如果是在已有的旧项目中改，那么改动成本也会比较大。
+  2. redux-saga并不适合在vue中使用。
+  3. 并且不太好用`about()`来打断请求，节约用户的流量带宽。（笔者不是很熟悉这2个框架。如有错误请指正。）
+
+# 一个更优雅的解决方案
+
+本文讲介绍一下利用generator解决此类问题。不需要引入额外的框架。也不需要额外的变量来控制。整体相对于以前用 async/await 方式来写的代码差别很小。
+
+首先我们模拟一个稍微复杂的场景
+用户点击按钮后修改一个变量。然后根据这个变量去串行请求2个接口。每个接口返回后都会立刻渲染到页面上。
+
+### 不做处理的代码
+
+如何我们不做竞态处理，主要代码如下：
+
+```javascript
+
+
+const currentIndex = ref();
+const firstData = ref();
+const secondData = ref();
+const queryList = [
+  {
+    time: 1,
+    data: 1,
+  },
+  {
+    time: 2,
+    data: 2,
+  },
+];
+
+// 监听变量的变化，发送请求
+watch(
+  () => currentIndex.value,
+  (val, oldVal, onCleanup) => {
+    fetchAndSetData(val)
+  }
+);
+
+// 发送2次请求，并分别设置
+async function fetchAndSetData(val) {
+  const args = queryList[val]
+  beforeData.value = await fetchDelayTime({ data: args.data + 'b', time: args.time / 2 })
+  resData.value = await fetchDelayTime(args);
+  return res
+}
+
+// 封装模拟请求的接口。 data会在请求的返回数据中原样返回。 time是请求的延迟时间。
+async function fetchDelayTime({ data, time }) {
+  let res = await fetch(`/api/delayTime?data=${data}&time=${time * 1000}`, {
+    cache: "no-store",
+  })
+  res = await res.json()
+  return res.data
+}
+
+```
+
+template 如下：
+
+```html
+<template>
+  <div>currentIndex: {{ currentIndex }}</div>
+  <button
+    class="btn"
+    v-for="(item, index) in queryList"
+    :key="index"
+    @click="() => {currentIndex = index}">
+    time: {{ item.time }} data: {{ item.data }}
+  </button>
+  <div>firstData: {{ firstData }}</div>
+  <div>secondData: {{ secondData }}</div>
+</template>
+```
+
+## 第一阶段用 generator 简单改造
+
+这里我们主要分2个阶段。第一阶段实现方案1类似的逻辑。第二阶段实现方案2类似的逻辑。
+
+第一阶段，先完成一个简单的版本。我们的目标是完成像方案1类似的判断逻辑，也就是在获取到数据后，进行一次判断。如果取消了，那么就不进行后续的赋值等操作。
+我们知道generator的主要作用就是可以在函数执行的过程中，暂停函数的执行，然后在外部通过next()方法来控制函数的执行。我们可以利用这个特性来实现我们的目标。
+
+#### 1.这里先修改`fetchAndSetData`函数修改为如下形式：
+
+```js
+function * fetchAndSetData(val) {
+  const args = queryList[val]
+  beforeData.value = yield fetchDelayTime({ data: args.data + 'b', time: args.time / 2 })
+  resData.value = yield fetchDelayTime(args);
+  return res
+}
+```
+
+`await`确实很好用，但是它是自动的等待后面的Promise执行完，然后程序会自动执行后续的赋值操作。外部无法做出任何干预，除非遇到报错停止函数执行。
+我们使用yield来替换原来的await。
+这样我们就可以手动操作，在获取到数据后，进行一次判断。如果取消了，那么就不进行后续的赋值等操作。
+
+#### 2.接下来修改watch的回调函数如下：
+
+```js
+// 监听变量的变化，发送请求
+watch(
+  () => currentIndex.value,
+  async (val, oldVal, onCleanup) => {
+    // 生成迭代器
+    const fetchIterator = fetchAndSetData(val)
+    // 是否取消后续操作
+    let isCancel = false
+    // 上次 yield 右值的结果，需要在下次 next 的时候传入
+    let lastNext
+    // 清理函数
+    onCleanup(() => {
+      isCancel = true
+    })
+    // 循环调用迭代器, 并判断是否需要取消
+    while(true) {
+      if (isCancel) {
+        // 取消后打断迭代器的后续操作，这里用了return()，用throw()也可以打断。 
+        // 不过后面我们需要统一在控制器内部处理 “取消错误”，让业务函数处理其他常规的错误如 网络 500, 语法错误
+        // 而且如果逻辑内部如果单独catch这个异步函数，这样 throw() 是没法打断函数后面的所有操作的!
+        fetchIterator.return('cancel')
+      }
+      const { value, done } = fetchIterator.next(lastNext)
+      // 如果yield右值是 Promise，那么这里等待Promise执行完，然后将结果传入下次next
+      // 这里把 await 等待Promise, 写在了控制 generator 的程序中，而不是直接写 generator 中。 后续将解释原因。
+      try{
+        if (value instanceof Promise) {
+          // 这里在外面等待Promise执行完，但有可能返回的是 reject 如网络 500 错误， 此时应该把错误交给业务迭代器内部，在业务代码中统一 catch 处理。
+          lastNext = await value
+        } else {
+          lastNext = value
+        }
+      } catch (err) {
+        fetchIterator.throw(err)
+      }
+      if (done) break
+    }
+  }
+);
+
+```
+
+这样我们的主要功能就完成了。可以看到，在多个串行请求下。我们依然能够正常的打断上次回调函数的运行。
+
+#### 3.优化封装一下
+
+当然我们这里还是有很多变量在watch中写的。为了后续其他的地方方便使用，进行一下封装。
+
+```js
+
+watch(
+  () => currentIndex.value,
+  vueWatchCallbackWarp(fetchAndSetData)
+)
+// 封装一个函数， 用来控制generator的执行， 其他地方也会用的这个函数
+// fetchGenerator 是一个generator函数， ...args 是 generator 函数的参数，也是watch的回调函数的参数
+// 我们在 generatorCtrl 这个函数中执行 fetchGenerator
+async function generatorCtrl(fetchGenerator, ...args) {
+  const fetchIterator = fetchGenerator(...args)
+  let isCancel = false
+  let lastNext
+  function cancel() {
+    isCancel = true
+  }
+  // 执行 fetchGenerator 内部函数代码
+  async function doFetch() {
+    while(true) {
+      if (isCancel) {
+        fetchIterator.return('cancel')
+      }
+      const { value, done } = fetchIterator.next(lastNext)
+      try{
+        if (value instanceof Promise) {
+          lastNext = await value
+        } else {
+          lastNext = value
+        }
+      } catch (err) {
+        if (err.message?.indexOf('user aborted') >= 0) {
+          fetchIterator.return('cancel')
+        } else {
+          fetchIterator.throw(err)
+        }
+      }
+      if (done) break
+    }
+    return lastNext
+  }
+  return {
+    doFetch,
+    cancel
+  }
+}
+
+// watch函数，执行回调和清理操作的代码。 我们也进行一次封装
+function vueWatchCallbackWarp(fetchGenerator) {
+  return (val, oldVal, onCleanup) => {
+    const { cancel, doFetch } = generatorCtrl(fetchGenerator, val)
+    onCleanup(cancel)
+    doFetch()
+  }
+}
+
+```
+
+#### 4.点击按钮后的直接请求，取消上次的请求
+
+当然我们代码中不光用watch的情况。对于点击一个按钮后，直接发起的请求。我们也需要在连续请求的时候，处理这种竞态问题.
+这样的话，我们需要保存一下`cancel()`函数。在用户点击按钮的时候，执行上一次函数的 `cancel()` 操作。这样就可以打断上次的请求了。
+增加代码如下。
+
+```js
+const clickFetchHandle = warpWithCancel(fetchAndSetData)
+
+// 封装高阶函数， 保存每次的取消函数
+function takeLatestWarp (fetchGenerator) {
+  // 保存取消函数
+  let lastCancel
+  return async function (...args) {
+    // 如果有取消函数，先取消打断
+    if (lastCancel) {
+      lastCancel()
+    }
+    // 执行 generator 函数，并赋值新的取消函数
+    const { cancel, doFetch } = generatorCtrl(fetchGenerator, ...args)
+    lastCancel = cancel
+    doFetch()
+  }
+}
+```
+
+```html
+<!-- 修改button点击事件 -->
+<button
+  ...
+  @click="clickFetchHandle(index)"
+  >
+  ...
+</button>
+```
+
+后续在其他地方的代码，只需要调用`takeLatestWarp`函数包装一下， 就可以实现每次点击按钮后， 打断上次的请求了。
+
+### 第一阶段总结
+
+这样，我们仅用了30多行代码，我们就完成了对竞态问题的处理。
+而在我们实际的项目中，改动点仅仅是在原来的业务代码中，把 `await` 改成 `yield` 就搞定了。相比其他旧的方案修改量非常小。
+并且我们写代码的思路，写法也是和原来的一样的。十分方便。不需要像Rxjs一样，学习一套新的api，用Rxjs的思路来写代码。
+此时我们可以发现， Generator 其实是非常强大的! 我们常用的 Async/await 并不是 Generator 的加强版，而是阉割版！
+
+如果不追求极致的话，上面的代码就完全可以了。主要是真的原来的代码来说，改动量很少。
+
+下一章我们来看一下，如何做到更极致一点，也就是利用`about()`来打断请求，节约用户的流量带宽。
+
+# 第二阶段： 利用 `about()`来打断请求
+
+#### 1. 封装fetch函数
+
+首先我们需要封装一下fetch函数，让它支持`about()`方法。
+
+```js
+// 重新封装一下 fetch 函数, 将 about() 停止请求封装到一起。
+function fetchWithCancel(input, init = {}) {
+  const ac = new AbortController();
+  const { signal } = ac;
+  const fetch2 = fetch(input, {
+    signal,
+    ...init,
+  })
+  // fetch2是一个Promise实例，也是一个对象，我们可以给它添加一个cancel方法。
+  // 这里给他添加对象，而不是单独的返回 cancel 函数，目的也是为了能其他用fetch请求的地方。 能做到写代码的时候，使用fetch和以前一样。不用关心是不是需要取消请求。
+  // 缺点是我们污染了这个对象的属性，考虑到一般不会有人操作 Promise 上的属性，所以这里利大于弊。让我们后续更方便。
+  fetch2.cancel = () => {
+    ac.abort()
+  }
+  return fetch2
+}
+```
+
+#### 2. 修改接口函数
+
+同样需要修改一下接口函数，使用新的fetch函数。 并且我们不再使用 await ， 而是用 yield。
+
+```js
+// 为了能够打断请求，必须要在外部的控制器中，拿到执行中的Promise实例，和对应cancel方法。所以这里不能用 await，而是用 yield。
+// 这样 yield 右值就是一个 Promise 实例，我们可以在外部拿到这个实例，然后执行 cancel 方法。
+function * fetchDelayTime({ data, time }) {
+  let res = yield fetchWithCancel(`/api/delayTime?data=${data}&time=${time * 1000}`, {
+    cache: "no-store",
+  })
+  res = yield res.json()
+  res = res.data
+  return res
+}
+```
+
+#### 3. 修改业务逻辑函数 `fetchAndSetData`
+
+将 `yield` 右值是 generator函数 的地方，改成 `yield*`, 这样始终把所有的generator的执行权，交给我们最外面的控制器。
+`yield*` 表达式: 用于委托给另一个generator 或可迭代对象。
+
+```js
+function * fetchAndSetData(val) {
+  const args = queryList[val]
+  beforeData.value = yield* fetchDelayTime({ data: args.data + 'b', time: args.time / 2 })
+  resData.value = yield* fetchDelayTime(args);
+  return res
+}
+```
+
+#### 4. 修改控制器 generatorCtrl
+
+能够在适当的时候执行Promise的cancel函数
+
+```js
+async function generatorCtrl(fetchGenerator, ...args) {
+  const fetchIterator = fetchGenerator(...args)
+  let isCancel = false
+  // 保存当前的Promise下的取消函数
+  let cancelFun
+  let lastNext
+  function cancel() {
+    isCancel = true
+    // 执行当前的Promise下的取消函数
+    cancelFun?.()
+  }
+  async function doFetch() {
+    while(true) {
+      if (isCancel) {
+        fetchIterator.return('cancel')
+      }
+      const { value, done } = fetchIterator.next(lastNext)
+      try {
+        if (value instanceof Promise) {
+          if (typeof value.cancel === 'function') {
+            // 保存当前的Promise下的取消函数
+            cancelFun = value.cancel
+          }
+          lastNext = await value
+        } else {
+          lastNext = value
+        }
+      } catch (err) {
+        if (err.message?.indexOf('user aborted') >= 0) {
+          fetchIterator.return('cancel')
+        } else {
+          fetchIterator.throw(err)
+        }
+      }
+      if (done) break
+    }
+    return lastNext
+  }
+  return {
+    doFetch,
+    cancel
+  }
+}
+```
+
+到这里基本上就完成了。当快速点击的时候。在控制台，我们可以看到，会打断前面的请求。
+另外，如果想处理更复杂一点的异步操作，我们还需要在处理一下 Promise.all 等静态函数。
+
+#### 5. 处理Promise并发操作
+
+处理Promise上的静态函数。比如 Promise.all ，需要在 Promise.all 返回的 Promise 实例上也有 cancel 方法，能够取消数组中的所有 Promise 实例。
+
+```js
+['all', 'allSettled', 'any', 'race'].forEach(i => {
+  if (Promise[i]) {
+    Promise[i] = function (...args) {
+      const resPromise = Promise[i](...args)
+      resPromise.cancel = (reason) => {
+        args.forEach(i => i.cancel?.(reason))
+      }
+      return resPromise
+    }
+  }
+})
+```
+
+这样我们在使用 Promise.all 的时候，也能够打断所有的 Promise 实例了。
+
+#### 6. 使用axios时候的处理。
+
+在项目中我们常用的是axios较多，这里看一下如何修改axios。
+因为axios内部 `axios.get`, `axios.post` 等方法都是调用的 `axios.request` 所以我们这里只修改 `axios.request` 就行了。
+当然也可以用其他的方式封装。
+
+```js
+import originAxios from 'axios'
+
+const Axios = originAxios.Axios
+
+const oldRequest = Axios.prototype.request
+// 重写 request。返回的 Promise 实例上增加 cancel 方法。和上面的fetch一样，方便我们后续的打断操作
+Axios.prototype.request = function (config) {
+  const ac = new AbortController()
+  const promise = oldRequest.call(this, {
+    signal: ac.signal,
+    ...config
+  })
+  promise.cancel = () => {
+    ac.abort()
+  }
+  return promise
+}
+const axios = originAxios.create()
+
+// 接口函数
+function * fetchDelayTime({ data, time }) {
+  let res = yield axiosGetWithCancel(`/api/delayTime?data=${data}&time=${time * 1000}`)
+  res = res.data.data
+  return res
+}
+
+function axiosGetWithCancel(input, init = {}) {
+  return axios.get(input)
+}
+```
+
+### 第二阶段总结
+
+这样我们第二阶段的改造就完成了。使用方法和第一阶段一样地。我们并没有修改针对 点击事件 和 watch回调 2个封装的高阶函数
+可以发现，主要流程和上一个阶段没有很多差别，关键用了一个取巧的方法，给请求的Promise实例上增加了一个cancel方法，能进行 `about()` 打断。
+这样的话我们在其他地方，还是像以前一样用 async/await 写代码也是不影响的。只是增加很少的内存开销，考虑到页面的请求并发也不会很多，而且请求完成后会自动清理，所以这里的内存开销可以忽略不计。
+
+# 注意事项：
+
+前面我们已经完成了对竞态问题的处理。2阶段看起来很好，使用方法和1阶段一样，那是不是直接都直接改成2阶段的代码就行了呢？
+
+其实这里还有一些必须要注意的点：
+
+1. 如果需要用about的形式打断请求，那么含有 `cancel()` 方法的那个 Promise 实例必须直接的放在 `yield` 右值的位置。后边不能再有 `then` 处理。比如下面的代码就是不行的。
+
+```js
+function * fetchDelayTime({ data, time }) {
+  // 这里用 含有 cancel 方法的 fetch函数距离， fetchWithCancel 返回的promise实例上是有 cancel 方法的
+  let res = yield fetchWithCancel(`/api/delayTime?data=${data}&time=${time * 1000}`, {
+    cache: "no-store",
+  })
+  // 这里执行 .then， 按照以前的逻辑是没问题，但是会返回新的Promise实例， 
+  // 导致此 yield 的右值不再是含有 cancel 方法的那个 Promise 实例，而是新的 Promise 实例。
+  // 这就导致了我们的控制器中拿到的是错误的Promise实例，没有cancel方法。 不能停止请求。还是按照 方案1 的方式打断的！！
+  .then(res => res.json())
+  res = res.data
+  return res
+}
+```
+同理，在对axios 添加 cancel方法 封装的时候，我们也是一样，为了保证axios普通的使用方法兼容，yield一般不会直接写在最接近axios请求函数的地方，以免影响其他地方的常规使用。这样就需要在保证在业务代码中写的yield的右值，是含有cancel方法的Promise实例。
+如果你封装的axios会处理Promise的then，那么你需要在封装的时候，保证then后返回的Promise实例，也是含有cancel方法的Promise实例。
+如果必须加`then`,需要手动将含有cancel方法的Promise实例，然后在 `then` 返回的Promise上增加这个方法。
+
+1. 不要使用 `AsyncGeneratorFunction`
+也就是不要用下面的语法：
+
+```js
+async function * fetchDelayTime({ data, time }) {
+  let res = yield fetchWithCancel(`/api/delayTime?data=${data}&time=${time * 1000}`, {
+    cache: "no-store",
+  })
+  // 这里用了 await， 理论上是没问题的。如果我们手动操作这个迭代器，我们能正常的操作。
+  // 但是我们在嵌套 Generator的时候，会使用 yield* 来处理。 yield* 没法处理 AsyncGeneratorFunction。可能后续es标准会支持。
+  // 所以建议统一都换成 yield。
+  res = await res.json()
+  res = res.data
+  return res
+}
+```
+
+3. 在控制器中我们执行`return()`,`throw()`不一定让业务函数完全停止
+
+如果业务函数中有 `try...catch` 语句，那么 `throw()` 只会打断 `try` 语句中的代码，而不会打断 `catch` 和 `try...catch` 语句外的代码。
+如果有`try...finally` 语句，那么 `return()` 会打断 `try` 语句中的代码，而 `finally` 语句中的代码会继续执行下去。
+
+
+4. 嵌套Generator需要用 `yield*` 来处理
+不要用 `fo...of` 在内部擅自处理 generator ，这2个不等价！！ 如果你是故意的，当我没说。
+我们只要向外委托当前的 generator 即可。不然无法做到正常的打断。
+`yield*` 右值需是 generator ， 此 generator 执行到最后 `return` 出来的值会自动赋给`yield*`左值。这里不是我们用 `next()` 控制的。
+`next()` 只能控制给当前 `yield` 关键字的左值赋值，无论是直接的 generator， 还是委托的 generator 都一样。
+
+5. 虽然我们有些包装函数会把 `doFetch()` 的异步结果返回。但是这个值并不一定是你想要的！分为以下几种情况：
+  a. 业务代码没有打断，return 正好就是你想要的结果。
+  b. 业务代码cancel打断了，但是没有 finally 语句，那么 return 的值是 'cancel', 也就是我们在控制器中 return 的值。
+  c. 业务代码cancel打断了，但是有 finally 语句，那么 return 的值是 finally 语句中的值。
+  d. 如果报错了，那么 return 的值是 catch 语句中的值。
+  所以，最好是不要用 `doFetch()` 的返回值，或者你有办法判断一下。
+
+6. Typescript 使用
+原来业务函数中返回的是 Promise，现在返回的是 Generator，所以需要修改一下类型。
+```ts
+// 原来
+function fetchSomething(): Promise<TReturn>
+// 现在
+function fetchSomething(): Generator<any, TReturn, any>
+```
+
+
+# 在react 中的使用
+
+如果您以前业务代码主要在redux，useReducer, 等类似在渲染函数外面的代码中，那么可以像上面一样，用闭包处理一下就行了。这里不再详述。
+如果主要的代码是在hooks中，因为react渲染会重新声明函数，就不能直接用上面的方式了。可以封装自定义hook来处理。
+
+#### 1. 自定义 `useEffect` ，监听 state变化的时候
+
+```js
+export function useEffectTakeLast(fetchGenerator, dep) {
+  useEffect(() => {
+    const { cancel, doFetch } = generatorCtrl(fetchGenerator, val)
+    doFetch()
+    return cancel
+  }, dep)
+}
+```
+
+#### 2. 自定义 `useCallback`, 用于点击事件
+
+
+```js
+
+import {useRef, useCallback} from 'react'
+
+export default function useCallBackTakeLast(fetchGenerator, dep) {
+  const lastCancel = useRef()
+  return useCallback(function (...args) {
+    // 如果有取消函数，先取消打断
+    if (lastCancel.current) {
+      lastCancel.current()
+    }
+    // 执行 generator 函数，并赋值新的取消函数
+    const { cancel, doFetch } = generatorCtrl(fetchGenerator, ...args)
+    lastCancel.current = cancel
+    doFetch()
+  }, dep)
+}
+```
+
+# 其他
+上面对fetch增加了cancel方法。对于其他异步操作我们也可以这样
+如：定时器
+```js
+function delayTime(t) {
+  let timer
+  const promise = new Promise((reslove) => {
+    timer = setTimeout(reslove, t)
+  })
+  promise.cancel = () => {
+    clearTimeout(timer)
+  }
+  return promise
+}
+```
+
+# 总结
+
+
+这里可以看一下这些的源码。
+部分函数也上传到了npm上。可以直接安装使用。
