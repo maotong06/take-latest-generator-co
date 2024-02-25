@@ -8,7 +8,14 @@
 
 ===================
 
+### 安装
+```shell
+npm install take-latest-generator-co
+```
+
 #### 在 vue 中使用：
+
+
 
 ```javascript
 import { watchCallbackGeneratorWarp, takeLatestWarp } from 'take-latest-generator-co/vue'
