@@ -3,7 +3,6 @@ import { ref, watch } from "vue";
 const currentIndex = ref();
 const resData = ref();
 const beforeData = ref();
-const loading = ref(false)
 const queryList = ref([
   {
     time: 1,
@@ -57,7 +56,7 @@ function runFetch(fetchFunc, args) {
         }
       } catch (err) {
         console.error('err', err.message, err.name)
-        if (err.message?.indexOf('user aborted') >= 0) {
+        if (err.name === 'AbortError') {
           runInt.return('cancel')
         } else {
           runInt.throw(err)
@@ -76,7 +75,6 @@ function runFetch(fetchFunc, args) {
 function * fetchAndSetData(val) {
   const args = queryList.value[val]
   try {
-    loading.value=true
     beforeData.value = yield* fetchDelayTime({ data: args.data + 'b', time: args.time / 2 })
     console.log('fetchAndSetData before over', args.data, beforeData.value)
     let res = yield* fetchDelayTime(args);
@@ -87,7 +85,6 @@ function * fetchAndSetData(val) {
     console.error('fetchAndSetData error', args.data, error)
   } finally {
     console.log('fetchAndSetData finil', args.data)
-    loading.value=false
   }
 }
 Promise.allWithCancel = function (...args) {
@@ -151,9 +148,6 @@ function warpWithCancel (fun) {
   </button>
   <div>beforeData: {{ beforeData }}</div>
   <div>resData: {{ resData }}</div>
-  <div class="loading" >
-    loading: {{ loading }}
-  </div>
 </template>
 
 <style scoped>

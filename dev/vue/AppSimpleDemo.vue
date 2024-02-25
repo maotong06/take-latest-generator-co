@@ -98,7 +98,7 @@ function warpWithCancel (fun) {
     class="btn"
     v-for="(item, index) in queryList"
     :key="index"
-    @click="clickFetch(index)">
+    @click="fetchItem(index)">
     time: {{ item.time }} data: {{ item.data }}
   </button>
   <div>firstData: {{ firstData }}</div>
