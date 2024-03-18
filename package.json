@@ -3,12 +3,6 @@
   "private": true,
   "homepage": "https://github.com/maotong06/take-latest-generator-co",
   "description": "利用generator解决竞态情况，在少量修改原代码的情况下，就能解决",
-  "tag": [
-    "generator",
-    "race condition",
-    "vue",
-    "react"
-  ],
   "version": "0.1.0",
   "type": "module",
   "module": "./dist/core.js",
