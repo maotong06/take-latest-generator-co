@@ -3,7 +3,7 @@
   "private": true,
   "homepage": "https://github.com/maotong06/take-latest-generator-co",
   "description": "利用generator解决竞态情况，在少量修改原代码的情况下，就能解决",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "module": "./dist/core.js",
   "types": "./dist/core.d.ts",
@@ -36,7 +36,6 @@
     "type": "git",
     "url": "git+https://github.com/maotong06/take-latest-generator-co.git"
   },
-  
   "publishConfig": {
     "access": "public"
   },
