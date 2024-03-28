@@ -131,7 +131,8 @@ export declare enum EAboutReason {
     CANCEL = "cancel"
 }
 /**
- * 给 Promise 添加取消方法，包括  'all', 'allSettled', 'any', 'race'。
+ * 给 Promise 添加带取消函数的一些方法，包括  'all', 'allSettled', 'any', 'race'。
+ * 默认会增加 'allWithCancel', 'allSettledWithCancel', 'anyWithCancel', 'raceWithCancel' 四个方法。
  * 增加的方法后缀默认为 'WithCancel'，可以通过参数修改。
  * @param {PromiseConstructor} originPromise - Promise 原始对象。
  * @param {string} [suffix='WithCancel'] - The suffix to be added to the cancellation methods.
