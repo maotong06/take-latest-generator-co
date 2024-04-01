@@ -1,5 +1,5 @@
 import { useRef, useCallback, useEffect } from 'react'
-import { generatorCtrl, type GeneratorFunctionReturn } from './core'
+import { generatorCtrl, type GeneratorFunctionReturn, type GeneratorFunctionType } from './core'
 export * from './core'
 
 type DependencyList = readonly unknown[]
@@ -13,7 +13,7 @@ type DependencyList = readonly unknown[]
  * @param deps - 依赖数组
  * @returns 返回一个 async 函数，该函数在开始新执行之前取消任何先前的未执行完成的流程。
  */
-export function useCallBackTakeLatest<T extends GeneratorFunction>(
+export function useCallBackTakeLatest<T extends GeneratorFunctionType>(
   fetchGenerator: T,
   deps: DependencyList
 ): (...args: Parameters<T>) => Promise<GeneratorFunctionReturn<T> | any> {

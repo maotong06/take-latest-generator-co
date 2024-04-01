@@ -1,4 +1,4 @@
-import { generatorCtrl } from './core'
+import { generatorCtrl, type GeneratorFunctionType } from './core'
 export * from './core'
 type OnCleanup = (cleanupFn: () => void) => void
 
@@ -10,7 +10,7 @@ type OnCleanup = (cleanupFn: () => void) => void
  * @param fetchGenerator - 需要包装的 generator 函数。
  * @returns 返回一个函数，作为 `watch` 的回调函数。
  */
-export function watchCallbackGeneratorWarp<T extends GeneratorFunction>(
+export function watchCallbackGeneratorWarp<T extends GeneratorFunctionType>(
   fetchGenerator: T
 ): (val: unknown, oldVal: unknown, onCleanup: OnCleanup) => void {
   return (val, oldVal, onCleanup) => {
@@ -28,7 +28,7 @@ export function watchCallbackGeneratorWarp<T extends GeneratorFunction>(
  * @param fetchGenerator - 需要包装的 generator 函数。
  * @returns 返回一个函数，作为 `watchEffect` 的回调函数。
  */
-export function watchEffectCallbackGeneratorWarp<T extends GeneratorFunction>(
+export function watchEffectCallbackGeneratorWarp<T extends GeneratorFunctionType>(
   fetchGenerator: T
 ): (onCleanup: OnCleanup) => void {
   return (onCleanup) => {

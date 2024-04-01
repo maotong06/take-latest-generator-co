@@ -2,11 +2,13 @@ export declare interface PromiseWithCancel<T> extends Promise<T> {
   abortThisPromise?(reason?: EAboutReason | string): void
   __ABORT_REASON__?: string
 }
-/** 根据 GeneratorFunction 推断 迭代器最后的return值
- *  @template Gf - GeneratorFunction
+/** 根据 GeneratorFunctionType 推断 迭代器最后的return值
+ *  @template Gf - GeneratorFunctionType
  * */
-export declare type GeneratorFunctionReturn<Gf extends GeneratorFunction> =
+export declare type GeneratorFunctionReturn<Gf extends GeneratorFunctionType> =
   ReturnType<Gf> extends Generator<any, infer R, any> ? R : never
+
+export type GeneratorFunctionType<T = unknown, TReturn = any, TNext = unknown> = (...args: any[]) => Generator<T, TReturn, TNext>;
 
 export enum EAboutReason {
   CANCEL = 'cancel'
@@ -44,7 +46,7 @@ export function appendPromiseCancelMethods(
  * @param {...any} args - fetchGenerator 函数的参数
  * @returns {Object} - 一个对象，包括 doFetch 和 cancel 两个方法，doFetch 用于执行 Generator 函数，cancel 用于取消执行。
  */
-export function generatorCtrl<T extends GeneratorFunction>(
+export function generatorCtrl<T extends GeneratorFunctionType>(
   fetchGenerator: T,
   args?: Parameters<T>
 ): {
@@ -107,7 +109,7 @@ export function generatorCtrl<T extends GeneratorFunction>(
  * @param {Function} fetchGenerator - 需要包装的 Generator 函数
  * @returns {Function} - 返回对应的 async 函数
  */
-export function takeLatestWarp<T extends GeneratorFunction>(
+export function takeLatestWarp<T extends GeneratorFunctionType>(
   fetchGenerator: T
 ): (...args: Parameters<T>) => Promise<GeneratorFunctionReturn<T> | any> {
   // 保存取消函数
@@ -129,7 +131,7 @@ export function takeLatestWarp<T extends GeneratorFunction>(
  * @param {Function} fetchGenerator - 需要包装的 Generator 函数
  * @returns {Function} - 返回对应的 async 函数
  */
-export function turnToAsyncWarp<T extends GeneratorFunction>(
+export function turnToAsyncWarp<T extends GeneratorFunctionType>(
   fetchGenerator: T
 ): (...args: Parameters<T>) => Promise<GeneratorFunctionReturn<T>> {
   return async function (...args) {
