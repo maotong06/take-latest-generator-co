@@ -18,9 +18,9 @@ npm install take-latest-generator-co
 
 
 ```javascript
-import { watchCallbackGeneratorWarp, takeLatestWarp } from 'take-latest-generator-co/vue'
+import { watchCallbackGeneratorWarp, takeLatestWarp } from 'take-latest-generator-co/dist/vue'
 // 如果想更彻底的取消请求， 节省用户流量。 可以使用 fetchWithCancel，代替 fetch。
-import { fetchWithCancel } from 'take-latest-generator-co/fetchWithCancel'
+import { fetchWithCancel } from 'take-latest-generator-co/dist/fetchWithCancel'
 
 
 // demo, 网络请求业务函数，改成 generator 函数
@@ -74,8 +74,8 @@ const clickFetch = takeLatestWarp(fetchAndSetData)
 
 ```jsx
 // 如果想更彻底的取消请求， 节省用户流量。 可以使用 fetchWithCancel，代替 fetch。
-import { fetchWithCancel } from 'take-latest-generator-co/fetchWithCancel'
-import { useCallBackTakeLatest, useEffectTakeLatest, turnToAsyncWarp } from 'take-latest-generator-co/react'
+import { fetchWithCancel } from 'take-latest-generator-co/dist/fetchWithCancel'
+import { useCallBackTakeLatest, useEffectTakeLatest, turnToAsyncWarp } from 'take-latest-generator-co/dist/react'
 
 const [currentIndex, setCurrentIndex] = useState()
 
