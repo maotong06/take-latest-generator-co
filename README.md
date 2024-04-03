@@ -13,9 +13,17 @@
 npm install take-latest-generator-co
 ```
 
+#### 如果需要Promise的静态方法也支持取消，执行一下下面的方法
+```javascript
+import { appendPromiseCancelMethods } from 'take-latest-generator-co'
+// 这会给Promise增加一些静态方法，比如 allWithCancel, allSettledWithCancel, anyWithCancel, raceWithCancel
+appendPromiseCancelMethods(Promise)
+
+// 也可以修改后缀，比如 '', 就会重写原来的方法
+// appendPromiseCancelMethods(Promise, '')
+```
+
 #### 在 vue 中使用：
-
-
 
 ```javascript
 import { watchCallbackGeneratorWarp, takeLatestWarp } from 'take-latest-generator-co/dist/vue'
